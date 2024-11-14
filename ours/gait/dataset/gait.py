@@ -1,5 +1,5 @@
 from __future__ import print_function
-from PIL import Image, PILLOW_VERSION
+from PIL import Image
 import os
 import os.path
 import numpy as np
