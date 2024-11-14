@@ -346,7 +346,7 @@ if __name__ == "__main__":
     for trial in range(opt.trials):
         auroc_one_trial = []
         tnr_one_trial = []
-       # checkOOD() #uncomment this for calculating the p-values and fisher values of the calibration and test data from scratch, it takes time to calculate these
+        checkOOD() #uncomment this for calculating the p-values and fisher values of the calibration and test data from scratch, it takes time to calculate these
         for i in range(opt.n):
             print("Calculating results for n: {} from the saved fisher-values".format(i+1))
             #print(i)
