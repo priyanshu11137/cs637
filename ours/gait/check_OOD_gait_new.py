@@ -77,7 +77,8 @@ def calc_test_ce_loss(opt, model, criterion, device, test_dataset, in_dist=True)
     save_path = 'in_dist' if in_dist else 'out_dist'
     with open(f'{opt.save_dir}/{save_path}_transform_losses.pickle', 'wb') as handle:
         pickle.dump(transform_losses_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    return np.array(all_traces_ce_loss)
+    return all_traces_ce_loss
+
 
 def calc_cal_ce_loss(opt, model, criterion, device, cal_dataloader):
     torch.set_grad_enabled(False)
