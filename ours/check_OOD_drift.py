@@ -128,7 +128,8 @@ def calc_test_ce_loss(opt, model, criterion, device, test_dataset, in_dist=True)
         with open('{}/out_dist_transform_losses.pickle'.format(opt.save_dir), 'wb') as handle:
             pickle.dump(trasform_losses_dictionary, handle, protocol=pickle.HIGHEST_PROTOCOL)
     
-    return np.array(all_traces_ce_loss)
+    return np.array(all_traces_ce_loss, dtype=object)
+
 
 def calc_cal_ce_loss(opt, model, criterion, device, cal_dataloader): # for calibration datapoint, we want one randomly sampled window for 1 datapoint
     torch.set_grad_enabled(False)
