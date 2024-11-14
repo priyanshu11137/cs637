@@ -166,6 +166,9 @@ def calc_cal_ce_loss(opt, model, criterion, device, cal_dataloader): # for calib
         ce_loss_all_iter.append(np.array(ce_loss))
     
     import pickle
+    import os
+    # Ensure the directory exists
+    os.makedirs(opt.save_dir, exist_ok=True)
     with open('{}/cal_transform_losses.pickle'.format(opt.save_dir), 'wb') as handle:
             pickle.dump(trasform_losses_dictionary, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
