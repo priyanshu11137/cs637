@@ -79,7 +79,6 @@ def calc_test_ce_loss(opt, model, criterion, device, test_dataset, in_dist=True)
         pickle.dump(transform_losses_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
     return all_traces_ce_loss
 
-
 def calc_cal_ce_loss(opt, model, criterion, device, cal_dataloader):
     torch.set_grad_enabled(False)
     model.eval()
@@ -122,19 +121,14 @@ def checkOOD(n=opt.n):
         print('iter: ', iter + 1)
         in_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device, test_dataset=in_test_dataset)
         in_test_ce_loss_all_iters.append(in_test_ce_loss)
-    import numpy as np
 
-    # Find the maximum length of traces across all iterations
     max_trace_len = max(max(len(trace) for trace in iter_losses) for iter_losses in in_test_ce_loss_all_iters)
-    
-    # Pad each trace in each iteration to the maximum trace length
     in_test_ce_loss_all_iters = [
         [np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]
         for iter_losses in in_test_ce_loss_all_iters
     ]
-    
-    # Convert the padded list to a 3D NumPy array
     in_test_ce_loss_all_iters = np.array(in_test_ce_loss_all_iters)
+
     out_test_dataset = GAIT(root_dir=opt.out_test_root_dir, win_len=opt.wl, train=False, cal=False, in_dist_test=False, transformation_list=opt.transformation_list, disease_type=opt.disease_type)
     print("Out test dataset len: ", out_test_dataset.__len__())
     out_test_ce_loss_all_iters = []
@@ -142,17 +136,13 @@ def checkOOD(n=opt.n):
         print('iter: ', iter + 1)
         out_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device, test_dataset=out_test_dataset, in_dist=False)
         out_test_ce_loss_all_iters.append(out_test_ce_loss)
-    import numpy as np
-    
-    # Find the maximum trace length across all iterations for out-dist test loss
+
     max_out_trace_len = max(max(len(trace) for trace in iter_losses) for iter_losses in out_test_ce_loss_all_iters)
-    # Pad each trace in out_test_ce_loss_all_iters to the maximum trace length
     out_test_ce_loss_all_iters = [
         [np.pad(trace, (0, max_out_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]
         for iter_losses in out_test_ce_loss_all_iters
     ]
-    # Convert the padded list to a 3D NumPy array
-    out_test_ce_loss_all_iters= np.array(out_test_ce_loss_all_iters)
+    out_test_ce_loss_all_iters = np.array(out_test_ce_loss_all_iters)
 
     np.savez(f"{opt.save_dir}/in_ce_loss_{opt.n}_iters.npz", in_ce_loss=in_test_ce_loss_all_iters)
     np.savez(f"{opt.save_dir}/out_ce_loss_{opt.n}_iters.npz", out_ce_loss=out_test_ce_loss_all_iters)
@@ -176,18 +166,16 @@ def checkOOD(n=opt.n):
             out_e_values_all_traces.append(np.array(out_e_values))
         np.savez(f"{opt.save_dir}/out_e_values_iter{iter+1}.npz", e_values=np.array(out_e_values_all_traces))
 
-def calc_fisher_value(t_value, eval_n):
-    summation = 0
-    for i in range(eval_n):
-        summation += ((-np.log(t_value)) ** i) / np.math.factorial(i)
-    return t_value * summation
+def calc_fisher_value_e(t_value, eval_n):
+    product = np.prod(t_value[:eval_n])
+    return product
 
 def calc_fisher_batch_e(e_values, eval_n):
     output = [[None] * len(window) for window in e_values[0]]
     for i in range(len(e_values[0])):
         for j in range(len(e_values[0][i])):
             prod = np.prod([e_values[k][i][j][0] for k in range(eval_n)])
-            output[i][j] = calc_fisher_value(prod, eval_n)
+            output[i][j] = calc_fisher_value_e(prod, eval_n)
     return output
 
 def eval_detection_fisher(eval_n):
