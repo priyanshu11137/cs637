@@ -142,7 +142,17 @@ def checkOOD(n=opt.n):
         print('iter: ', iter + 1)
         out_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device, test_dataset=out_test_dataset, in_dist=False)
         out_test_ce_loss_all_iters.append(out_test_ce_loss)
-    out_test_ce_loss_all_iters = np.array(out_test_ce_loss_all_iters)
+    import numpy as np
+    
+    # Find the maximum trace length across all iterations for out-dist test loss
+    max_out_trace_len = max(max(len(trace) for trace in iter_losses) for iter_losses in out_test_ce_loss_all_iters)
+    # Pad each trace in out_test_ce_loss_all_iters to the maximum trace length
+    out_test_ce_loss_all_iters = [
+        [np.pad(trace, (0, max_out_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]
+        for iter_losses in out_test_ce_loss_all_iters
+    ]
+    # Convert the padded list to a 3D NumPy array
+    out_test_ce_loss_all_iters= np.array(out_test_ce_loss_all_iters)
 
     np.savez(f"{opt.save_dir}/in_ce_loss_{opt.n}_iters.npz", in_ce_loss=in_test_ce_loss_all_iters)
     np.savez(f"{opt.save_dir}/out_ce_loss_{opt.n}_iters.npz", out_ce_loss=out_test_ce_loss_all_iters)
