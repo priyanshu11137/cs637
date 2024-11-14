@@ -44,6 +44,9 @@ parser.add_argument('--transformation_list', '--names-list', nargs='+', default=
 opt = parser.parse_args()
 print(opt)
 
+# Ensure the save directory exists
+os.makedirs(opt.save_dir, exist_ok=True)
+
 dataset_class = {'DriftDataset': DriftDataset}
 
 # Use CUDA
