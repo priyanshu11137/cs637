@@ -163,7 +163,7 @@ def checkOOD(n=opt.n):
 
     out_test_dataset = dataset_class[opt.dataset](root_dir=opt.out_test_root_dir, clip_len=opt.cl, train=False,
                                                   cal=False, transforms_=transforms, img_hgt=opt.img_hgt,
-                                                  img_width=opt.img_width, in_dist_test=False,
+                                                  img_width=opt.img_width, in_dist_test=True,
                                                   use_image=opt.use_image, use_of=opt.use_of,
                                                   transformation_list=opt.transformation_list)
 
