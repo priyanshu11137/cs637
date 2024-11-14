@@ -122,8 +122,19 @@ def checkOOD(n=opt.n):
         print('iter: ', iter + 1)
         in_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device, test_dataset=in_test_dataset)
         in_test_ce_loss_all_iters.append(in_test_ce_loss)
-    in_test_ce_loss_all_iters = np.array(in_test_ce_loss_all_iters)
+    import numpy as np
 
+    # Find the maximum length of traces across all iterations
+    max_trace_len = max(max(len(trace) for trace in iter_losses) for iter_losses in in_test_ce_loss_all_iters)
+    
+    # Pad each trace in each iteration to the maximum trace length
+    in_test_ce_loss_all_iters = [
+        [np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]
+        for iter_losses in in_test_ce_loss_all_iters
+    ]
+    
+    # Convert the padded list to a 3D NumPy array
+    in_test_ce_loss_all_iters = np.array(in_test_ce_loss_all_iters)
     out_test_dataset = GAIT(root_dir=opt.out_test_root_dir, win_len=opt.wl, train=False, cal=False, in_dist_test=False, transformation_list=opt.transformation_list, disease_type=opt.disease_type)
     print("Out test dataset len: ", out_test_dataset.__len__())
     out_test_ce_loss_all_iters = []
