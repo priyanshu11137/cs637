@@ -206,7 +206,7 @@ if __name__ == '__main__':
             val_loss = validate(args, net, criterion, device, val_dataloader, writer, epoch)
             # scheduler.step(val_loss)         
             writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], epoch)
-            if epoch == 3000:
+            if epoch%50==0:
                 torch.save(net.state_dict(), os.path.join(log_dir, 'gait_{}.pt'.format(args.wl)))
 
     elif args.mode == 'test':  ########### Test #############
