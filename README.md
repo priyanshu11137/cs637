@@ -1,7 +1,7 @@
 # CoDIT
 CS637 Group Project: Paper implementation and improvement of Conformal Out-of-Distribution Detection in Time Series Data Ramneet Kaur, Kaustubh Sridhar, Sangdon Park, et al.
 
-Group Members: Arpit Raj, Danish Vasdev, Prakhar Mishra, Priyanshu Raj Jindal, Rohan Virmani, Ujjawal Dubey
+Group Members: Arpit Raj(210192), Danish Vasdev(210298), Prakhar Mishra(210738), Priyanshu Raj Jindal(210787), Rohan Virmani(210871), Ujjawal Dubey(211121)
 ## Files and Implementation
 ### Reproducing Results and approach (e value method instead of p value)
 The code available has been corrected and is up and running. It can be run directly from 'code_run.ipynb' file after loading the required datasets from the links provided (the GAIT dataset is small and can be downloaded for use on kaggle).
