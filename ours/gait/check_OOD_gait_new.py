@@ -293,19 +293,21 @@ def checkOOD(n=opt.n):
     np.savez(f"{opt.save_dir}/cal_ce_loss_{n}_iters.npz", ce_loss=cal_set_ce_loss_all_iter)
 
     ############################################################################################################
-    
     # E-value Calculation and P-value Conversion
     for iter in range(n):
         # In-Distribution E-values and P-values
         in_evalues_all_traces = []
         in_p_values_all_traces = []
-        cal_evalues = compute_evalue(np.array(cal_set_ce_loss_all_iter[iter]), cal_set_ce_loss_all_iter[iter], thresholds[iter])
+
+        # Calculate calibration E-values once per iteration
+        cal_evalues = compute_evalue(cal_set_ce_loss_all_iter[iter], cal_set_ce_loss_all_iter[iter], thresholds[iter])
 
         for test_idx in range(len(in_test_ce_loss_all_iters[iter])):
-            in_evalues = compute_evalue(np.array(in_test_ce_loss_all_iters[iter][test_idx]), cal_set_ce_loss_all_iter[iter], thresholds[iter])
+            # Compute E-values for each window in the in-distribution test data
+            in_evalues = compute_evalue(in_test_ce_loss_all_iters[iter][test_idx], cal_set_ce_loss_all_iter[iter], thresholds[iter])
             in_evalues_all_traces.append(in_evalues)
 
-            # Convert E-values to P-values
+            # Convert E-values to P-values using the calibration E-values
             in_p_values = evalue_to_pvalue(in_evalues, cal_evalues)
             in_p_values_all_traces.append(in_p_values)
 
@@ -319,10 +321,11 @@ def checkOOD(n=opt.n):
         out_p_values_all_traces = []
 
         for test_idx in range(len(out_test_ce_loss_all_iters[iter])):
-            out_evalues = compute_evalue(np.array(out_test_ce_loss_all_iters[iter][test_idx]), cal_set_ce_loss_all_iter[iter], thresholds[iter])
+            # Compute E-values for each window in the out-of-distribution test data
+            out_evalues = compute_evalue(out_test_ce_loss_all_iters[iter][test_idx], cal_set_ce_loss_all_iter[iter], thresholds[iter])
             out_evalues_all_traces.append(out_evalues)
 
-            # Convert E-values to P-values
+            # Convert E-values to P-values using the calibration E-values
             out_p_values = evalue_to_pvalue(out_evalues, cal_evalues)
             out_p_values_all_traces.append(out_p_values)
 
