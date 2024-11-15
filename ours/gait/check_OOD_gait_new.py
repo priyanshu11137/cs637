@@ -45,7 +45,7 @@ parser.add_argument('--in_test_root_dir', type=str, default='data/gait-in-neurod
 parser.add_argument('--out_test_root_dir', type=str, default='data/gait-in-neurodegenerative-disease-database-1.0.0',help='test data directory')
 parser.add_argument('--transformation_list', '--names-list', nargs='+', default=["low_pass", "high_pass", "identity"])
 parser.add_argument('--disease_type', type=str, default='als', help='als/hunt/park/all')
-parser.add_argument('--check_ood', type=bool, default=false, help='true/false')
+parser.add_argument('--check_ood', type=bool, default=False, help='true/false')
 
 opt = parser.parse_args()
 print(opt)
