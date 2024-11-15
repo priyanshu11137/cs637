@@ -10,4 +10,5 @@ A new file named '/ours/gait/check_ood_gait_new.py' has been added. It's an alte
 ### Extending current approach to new application on FGSM attack and presentaing an alternative approach which uses activation function for NCM. 
 'ours/AWS_Utilization.ipynb': For the FGSM experiment, activation function NCM experiment
 
-This extends the application of OOD detection using CoDIT to FGSM attacks.
+This extends the application of OOD detection using CoDIT to FGSM attacks. FGSM attacks are not easily detectable by traditional OOD detection methods. CoDIT offers much more robust detection for such attacks which may harm critical systems.
+Further, we implemented another non conformity measure, instead of the cross entropy loss, we use the activation of last layer of the network that has encoded the transformations. 
