@@ -49,7 +49,7 @@ parser.add_argument('--disease_type', type=str, default='als', help='als/hunt/pa
 
 opt = parser.parse_args()
 print(opt)
-
+os.makedirs(opt.save_dir, exist_ok=True)
 
 # Use CUDA
 os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3"
