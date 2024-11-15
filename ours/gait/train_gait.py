@@ -193,21 +193,33 @@ if __name__ == '__main__':
 
         ### loss funciton, optimizer and scheduler ###
         criterion = nn.CrossEntropyLoss()
-
-        # setup optimizer
         optimizer = optim.Adam(params= net.parameters(), lr= args.lr, weight_decay=args.wgtDecay)
 
         prev_best_val_loss = float('inf')
-        prev_best_model_path = None
-        for epoch in range(args.start_epoch, args.start_epoch+args.epochs):
+        prev_best_model_path = os.path.join(log_dir, 'best_drift_model.pt')
+        for epoch in range(args.start_epoch, args.start_epoch + args.epochs):
             time_start = time.time()
             train(args, net, criterion, optimizer, device, train_dataloader, writer, epoch)
-            #print('Epoch time: {:.2f} s.'.format(time.time() - time_start))
+            print('Epoch time: {:.2f} s.'.format(time.time() - time_start))
+            
+            # Validation step
             val_loss = validate(args, net, criterion, device, val_dataloader, writer, epoch)
-            # scheduler.step(val_loss)         
             writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], epoch)
+<<<<<<< HEAD
             if epoch%50==0:
                 torch.save(net.state_dict(), os.path.join(log_dir, 'gait_{}.pt'.format(args.wl)))
+=======
+            
+            # Check if this is the best model so far based on validation loss
+            if val_loss < prev_best_val_loss:
+                prev_best_val_loss = val_loss
+                torch.save(net.state_dict(), prev_best_model_path)
+                print(f'New best model saved with validation loss: {val_loss:.3f}')
+        
+            # Save model every 50 epochs regardless
+            if epoch % 50 == 0:
+                torch.save(net.state_dict(), os.path.join(log_dir, f'drift_epoch_{epoch}.pt'))
+>>>>>>> origin/main
 
     elif args.mode == 'test':  ########### Test #############
         net.load_state_dict(torch.load(args.ckpt))

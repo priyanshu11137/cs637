@@ -14,4 +14,8 @@ tensorboardX>=2.1
 torch>=1.7.0
 torchvision>=0.8.1
 tqdm>=4.50.0
+<<<<<<< HEAD
 opencv-python>=4.2.0
+=======
+opencv-python>=4.2.0
+>>>>>>> origin/main

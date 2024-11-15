@@ -475,4 +475,8 @@ if __name__ == "__main__":
     print("AUROC for CODiT(n=20) on Drift dataset with w=16: ", np.mean(auroc_all_trials,0)[-1])
     # print(np.std(auroc_all_trials,0))
 
+<<<<<<< HEAD
     print("TNR for CODiT(n=20) on Drift dataset with w=16: ", np.mean(tnr_all_trials,0)[-1])
+=======
+    print("TNR for CODiT(n=20) on Drift dataset with w=16: ", np.mean(tnr_all_trials,0)[-1])
+>>>>>>> origin/main
