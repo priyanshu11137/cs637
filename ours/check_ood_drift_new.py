@@ -1,5 +1,9 @@
-# Command to run:
-# python check_OOD_drift.py --gpu 0 --cuda --ckpt saved_models/drift.pt --n 20 --save_dir drift_log --transformation_list speed shuffle reverse periodic identity
+'''
+command to run
+
+python check_OOD_drift.py --gpu 0 --cuda --ckpt saved_models/drift.pt --n 20 --save_dir drift_log --transformation_list speed shuffle reverse periodic identity
+
+'''
 
 from __future__ import print_function
 import argparse
@@ -7,41 +11,52 @@ import os
 import random
 import torch
 import torch.nn as nn
+import torch.nn.parallel
 import torch.backends.cudnn as cudnn
-from torch.utils.data import DataLoader
+import torch.optim as optim
+import torch.utils.data
+import torchvision.transforms as transforms
+import torchvision.utils as vutils
+from torch.utils.data import DataLoader, random_split
+import itertools
+
 import numpy as np
+
 from models.r3d import Regressor as r3d_regressor
 from dataset.drift import DriftDataset
-import pickle
+
+import PIL
+import csv
+
+import pdb
 from distutils.util import strtobool
-from sklearn.metrics import roc_auc_score
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--workers', type=int, default=4, help='number of data loading workers')
+parser.add_argument('--workers', type=int, help='number of data loading workers', default=4)
 parser.add_argument('--bs', type=int, default=2)
 parser.add_argument('--cuda', action='store_true', help='enables cuda')
-parser.add_argument('--ckpt', default='saved_models/drift.pt', help="path to trained network")
+parser.add_argument('--ckpt', default='saved_models/drift.pt', help="path load the trained network")
 parser.add_argument('--gpu', default='0', type=str, help='id(s) for CUDA_VISIBLE_DEVICES')
-parser.add_argument('--trials', type=int, default=1, help='number of trials for averaging results')
+parser.add_argument('--trials', type=int, default=1, help='no. of trials for taking average for the final results')
 parser.add_argument('--model', type=str, default='r3d', help='c3d/r3d/r21d')
-parser.add_argument('--cl', type=int, default=16, help='clip length')
-parser.add_argument('--img_size', type=int, default=224, help='image height/width')
-parser.add_argument('--n', type=int, default=5, help='number of continuous windows with e-value threshold for OOD detection')
+parser.add_argument('--cl', type=int, default=16, help='clip length=16/18/20')
+parser.add_argument('--img_size', type=int, default=224, help='img height/width')
+parser.add_argument('--n', type=int, default=5, help='number of continuous windows with p-value < epsilon to detect OODness in the trace')
 parser.add_argument('--seed', type=int, default=100, help='random seed')
-parser.add_argument('--save_dir', type=str, default='drift_log', help='directory for saving e-values')
-parser.add_argument('--cal_root_dir', type=str, default='data/drift_dataset/testing/calibration', help='calibration data directory')
-parser.add_argument('--in_test_root_dir', type=str, default='data/drift_dataset/testing/in', help='test data directory')
-parser.add_argument('--out_test_root_dir', type=str, default='data/drift_dataset/testing/out', help='test data directory')
+parser.add_argument('--save_dir', type=str, default='drift_log', help='directory for saving p-vaues')
+parser.add_argument('--cal_root_dir', type=str, default='data/drift_dataset/testing/calibration',help='calibration data directory')
+parser.add_argument('--in_test_root_dir', type=str, default='data/drift_dataset/testing/in',help='test data directory')
+parser.add_argument('--out_test_root_dir', type=str, default='data/drift_dataset/testing/out',help='test data directory')
 parser.add_argument('--img_hgt', type=int, default=224, help='img height')
 parser.add_argument('--img_width', type=int, default=224, help='img width')
 parser.add_argument('--dataset', default='DriftDataset', help='DriftDataset')
-parser.add_argument("--use_image", type=lambda x: bool(strtobool(x)), default=False, help="Use image info")
-parser.add_argument("--use_of", type=lambda x: bool(strtobool(x)), default=True, help="use optical flow info")
-parser.add_argument('--transformation_list', '--names-list', nargs='+', default=["speed", "shuffle", "reverse", "periodic", "identity"])
-
+parser.add_argument("--use_image", type=lambda x:bool(strtobool(x)), default=False, help="Use img info")
+parser.add_argument("--use_of", type=lambda x:bool(strtobool(x)), default=True, help="use optical flow info")
+parser.add_argument('--transformation_list', '--names-list', nargs='+', default=["speed","shuffle","reverse","periodic","identity"])
+parser.add_argument('--check_ood', type=bool, default=False, help='true/false')
 opt = parser.parse_args()
 print(opt)
-
+os.makedirs(opt.save_dir, exist_ok=True)
 dataset_class = {'DriftDataset': DriftDataset}
 
 # Use CUDA
@@ -69,174 +84,395 @@ transforms = transforms.Compose([
 # pdb.set_trace()
 
 criterion = nn.CrossEntropyLoss()
+import numpy as np
 
-# Function to calculate test loss
+def compute_threshold(test_statistics, null_statistics, level=0.05):
+    """
+    Compute the threshold based on the combined test statistics (in-dist + OOD)
+    and the null (calibration) statistics. The threshold is determined such
+    that the false discovery proportion (FDP) is controlled at the given level.
+    """
+    n, m = len(null_statistics), len(test_statistics)
+    mixed_statistics = np.concatenate([null_statistics, test_statistics])
+    sample_ind = np.concatenate([np.ones(len(null_statistics)), np.zeros(len(test_statistics))])
+
+    sample_ind_sort = sample_ind[np.argsort(-mixed_statistics)]
+    fdp = 1
+    V = n
+    K = m
+    l = m + n
+
+    while fdp > level and K >= 1:
+        l -= 1
+        if sample_ind_sort[l] == 1:
+            V -= 1
+        else:
+            K -= 1
+        fdp = (V * m) / (n * K) if K else 1
+
+    mixed_statistics_sort_ind = np.argsort(-mixed_statistics)
+    if fdp > level:
+        threshold = mixed_statistics[mixed_statistics_sort_ind[0]] + 1
+    else:
+        threshold = mixed_statistics[mixed_statistics_sort_ind[l-1]]
+    
+    return threshold
+
+
+def compute_evalue(test_statistics, null_statistics, t):
+    """
+    Compute the e-values based on test statistics and calibration (null) statistics
+    with respect to a threshold t.
+    """
+    denominator = (1 + np.sum(null_statistics >= t)) / (1 + null_statistics.shape[0])
+    evalues = ((test_statistics >= t).astype(int) / denominator)
+    return evalues
+
+
+def evalue_to_pvalue(evalues, cal_evalues):
+    """
+    Convert e-values to p-values using the empirical cumulative distribution
+    of calibration e-values.
+    """
+    p_values = [(np.sum(cal_evalues >= e) / len(cal_evalues)) for e in evalues]
+    return np.array(p_values)
+
+
 def calc_test_ce_loss(opt, model, criterion, device, test_dataset, in_dist=True):
     torch.set_grad_enabled(False)
     model.eval()
+
     all_traces_ce_loss = []
-    transform_losses_dict = {str(i): [] for i in range(5)}
 
-    for test_data_idx in range(test_dataset.__len__()):
+    key_list = ["0", "1", "2", "3", "4"]
+    trasform_losses_dictionary = dict.fromkeys(key_list)
+    for key in key_list:
+         trasform_losses_dictionary[key] = []
+
+    for test_data_idx in range(0, test_dataset.__len__()): # loop over all test datapoints
+        
         trace_ce_loss = []
-        for orig_clip, transformed_clip, transformation in test_dataset.__get_test_item__(test_data_idx):
-            orig_clip, transformed_clip = orig_clip.unsqueeze(0).to(device), transformed_clip.unsqueeze(0).to(device)
-            target_transformation = torch.tensor([transformation]).to(device)
-            output = model(orig_clip, transformed_clip)
+        
+        for orig_window, transformed_window, transformation in test_dataset.__get_test_item__(test_data_idx): # loop over sliding window in the test trace
+            
+            orig_window = orig_window.unsqueeze(0)
+            transformed_window = transformed_window.unsqueeze(0)
+            orig_window = orig_window.to(device)
+            transformed_window = transformed_window.to(device)
+            transformation = [transformation]
+            target_transformation = torch.tensor(transformation).to(device)
+            # forward
+            output = model(orig_window, transformed_window)
+            # print("Output: {} and target: {}".format(torch.argmax(output), target_transformation))
             loss = criterion(output, target_transformation)
-            transform_losses_dict[str(target_transformation.item())].append(float(loss))
+            # print("Output: {}, target: {}, loss: {}".format(torch.argmax(output), target_transformation, float(loss)))
+            trasform_losses_dictionary['{}'.format(target_transformation.item())].append(float(loss))
+            # print("Loss: ", float(loss))
             trace_ce_loss.append(float(loss))
+
         all_traces_ce_loss.append(np.array(trace_ce_loss))
+    
+    import pickle 
+    if in_dist:
+        with open('{}/in_dist_transform_losses.pickle'.format(opt.save_dir), 'wb') as handle:
+            pickle.dump(trasform_losses_dictionary, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-    save_path = 'in_dist' if in_dist else 'out_dist'
-    with open(f'{opt.save_dir}/{save_path}_transform_losses.pickle', 'wb') as handle:
-        pickle.dump(transform_losses_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    return np.array(all_traces_ce_loss)
+    else:
+        with open('{}/out_dist_transform_losses.pickle'.format(opt.save_dir), 'wb') as handle:
+            pickle.dump(trasform_losses_dictionary, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    return all_traces_ce_loss
 
-# Function to calculate calibration loss
-def calc_cal_ce_loss(opt, model, criterion, device, cal_dataloader):
+def calc_cal_ce_loss(opt, model, criterion, device, cal_dataloader): # for calibration datapoint, we want one randomly sampled window for 1 datapoint
     torch.set_grad_enabled(False)
     model.eval()
-    ce_loss_all_iter = []
-    transform_losses_dict = {str(i): [] for i in range(5)}
 
-    for iter in range(opt.n):
+    ce_loss_all_iter = []
+
+    # torch.manual_seed(opt.seed)
+    # np.random.seed(opt.seed)
+    # random.seed(opt.seed)
+
+    # definning dictionary for saving losses
+    key_list = ["0", "1", "2", "3", "4"]
+    trasform_losses_dictionary = dict.fromkeys(key_list)
+    for key in key_list:
+         trasform_losses_dictionary[key] = []
+
+    print("Calculating CE For calibration data n times")
+    for iter in range(0, opt.n): # n iterations with random sampling of windows and transformations on calibration datapoints
+        print("n: ", iter+1)
         ce_loss = []
-        for orig_clips, transformed_clips, transformation in cal_dataloader:
-            orig_clips, transformed_clips = orig_clips.to(device), transformed_clips.to(device)
+        for _, data in enumerate(cal_dataloader, 1): # iteration over all calibration datapoints
+            # get inputs
+            orig_windows, transformed_windows, transformation = data
+            orig_windows = orig_windows.to(device)
+            transformed_windows = transformed_windows.to(device)
             target_transformations = torch.tensor(transformation).to(device)
-            outputs = model(orig_clips, transformed_clips)
+            # forward
+            outputs = model(orig_windows, transformed_windows)
             for i in range(len(outputs)):
                 loss = criterion(outputs[i].unsqueeze(0), target_transformations[i].unsqueeze(0))
                 ce_loss.append(loss.item())
-                transform_losses_dict[str(target_transformations[i].item())].append(float(loss))
+                # print("Loss: {}, transformation: {}, predicted trans: {}".format(loss.item(), transformation[i], outputs[i]))
+                trasform_losses_dictionary['{}'.format(target_transformations[i].item())].append(float(loss))
+
+        #print('[Cal] loss: ', ce_loss)
         ce_loss_all_iter.append(np.array(ce_loss))
+    
+    import pickle
+    with open('{}/cal_transform_losses.pickle'.format(opt.save_dir), 'wb') as handle:
+            pickle.dump(trasform_losses_dictionary, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-    with open(f'{opt.save_dir}/cal_transform_losses.pickle', 'wb') as handle:
-        pickle.dump(transform_losses_dict, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    return np.array(ce_loss_all_iter)
+    return ce_loss_all_iter
 
-# Function to calculate e-values
-def calc_e_value(test_ce_loss, cal_set_ce_loss):
-    cal_set_ce_loss_reshaped = cal_set_ce_loss.reshape(1, -1)
-    test_ce_loss_reshaped = test_ce_loss.reshape(-1, 1)
-    compare = (test_ce_loss_reshaped >= cal_set_ce_loss_reshaped)
-    e_value = np.sum(compare, axis=1)
-    e_value = (e_value + 1) / (len(cal_set_ce_loss) + 1)
-    return e_value
+def calc_p_value(test_ce_loss, cal_set_ce_loss):
 
-# Modified function for Fisher combination of e-values
-def calc_fisher_value_e(t_value, eval_n):
-    product = np.prod(t_value[:eval_n])
-    return product
+    cal_set_ce_loss_reshaped = cal_set_ce_loss
+    cal_set_ce_loss_reshaped = cal_set_ce_loss_reshaped.reshape(1,-1) # cal_set_ce_loss reshaped into row vector
 
-def calc_fisher_batch_e(e_values, eval_n):
-    output = [[None] * len(window) for window in e_values[0]]
-    for i in range(len(e_values[0])):
-        for j in range(len(e_values[0][i])):
-            prod = np.prod([e_values[k][i][j][0] for k in range(eval_n)])
-            output[i][j] = calc_fisher_value_e(prod, eval_n)
-    return output
+    test_ce_loss_reshaped = test_ce_loss
+    test_ce_loss_reshaped = test_ce_loss_reshaped.reshape(-1,1) # test_ce_loss reshaped into column vector
 
-# Main checkOOD function
+    #pdb.set_trace()
+    compare = (test_ce_loss_reshaped)<=(cal_set_ce_loss_reshaped)
+    p_value = np.sum(compare, axis=1)
+    p_value = (p_value+1)/(len(cal_set_ce_loss)+1)
+    # print(p_value)
+
+    return p_value
+
+
+
 def checkOOD(n=opt.n):
-    cal_dataset = dataset_class[opt.dataset](root_dir=opt.cal_root_dir, clip_len=opt.cl, train=False, cal=True,
-                                             transforms_=transforms, img_hgt=opt.img_hgt, img_width=opt.img_width,
-                                             use_image=opt.use_image, use_of=opt.use_of,
-                                             transformation_list=opt.transformation_list)
+    # Calibration CE Loss
+    cal_dataset = GAIT(root_dir=opt.cal_root_dir, win_len=opt.wl, train=False, cal=True, in_dist_test=False, transformation_list=opt.transformation_list)
+    print("Cal dataset len:", cal_dataset.__len__())
     cal_dataloader = DataLoader(cal_dataset, batch_size=opt.bs, shuffle=False, num_workers=opt.workers)
-
-    cal_set_ce_loss_all_iter = calc_cal_ce_loss(opt, model=net, criterion=criterion, device=device,
-                                                cal_dataloader=cal_dataloader)
-
-    in_test_dataset = dataset_class[opt.dataset](root_dir=opt.in_test_root_dir, clip_len=opt.cl, train=False, cal=False,
-                                                 transforms_=transforms, img_hgt=opt.img_hgt, img_width=opt.img_width,
-                                                 in_dist_test=True, use_image=opt.use_image, use_of=opt.use_of,
-                                                 transformation_list=opt.transformation_list)
-
+    
+    cal_set_ce_loss_all_iter = calc_cal_ce_loss(opt, model=net, criterion=criterion, device=device, cal_dataloader=cal_dataloader)
+    
+    ############################################################################################################
+    
+    # In-Dist and OOD Test CE Losses
+    in_test_dataset = GAIT(root_dir=opt.in_test_root_dir, win_len=opt.wl, train=False, cal=False, in_dist_test=True, transformation_list=opt.transformation_list)
+    print("In test dataset len:", in_test_dataset.__len__())
+    
+    out_test_dataset = GAIT(root_dir=opt.out_test_root_dir, win_len=opt.wl, train=False, cal=False, in_dist_test=False, transformation_list=opt.transformation_list, disease_type=opt.disease_type)
+    print("Out test dataset len:", out_test_dataset.__len__())
+    
     in_test_ce_loss_all_iters = []
-    for iter in range(opt.n):
-        in_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device,
-                                            test_dataset=in_test_dataset)
-        in_test_ce_loss_all_iters.append(in_test_ce_loss)
-    in_test_ce_loss_all_iters = np.array(in_test_ce_loss_all_iters)
-
-    out_test_dataset = dataset_class[opt.dataset](root_dir=opt.out_test_root_dir, clip_len=opt.cl, train=False,
-                                                  cal=False, transforms_=transforms, img_hgt=opt.img_hgt,
-                                                  img_width=opt.img_width, in_dist_test=True,
-                                                  use_image=opt.use_image, use_of=opt.use_of,
-                                                  transformation_list=opt.transformation_list)
-
     out_test_ce_loss_all_iters = []
-    for iter in range(opt.n):
-        out_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device,
-                                             test_dataset=out_test_dataset, in_dist=False)
+    thresholds = []
+
+    # Calculate CE Loss and Thresholds for each iteration
+    print("Calculating CE for OOD and ID test data and computing thresholds")
+    for iter in range(n):
+        print('Iteration:', iter + 1)
+
+        # Calculate CE Loss for In-Distribution Test Data
+        in_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device, test_dataset=in_test_dataset)
+        in_test_ce_loss_all_iters.append(in_test_ce_loss)
+
+        # Calculate CE Loss for Out-Distribution Test Data
+        out_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device, test_dataset=out_test_dataset, in_dist=False)
         out_test_ce_loss_all_iters.append(out_test_ce_loss)
-    out_test_ce_loss_all_iters = np.array(out_test_ce_loss_all_iters)
 
-    np.savez(f"{opt.save_dir}/in_ce_loss_{opt.n}_iters.npz", in_ce_loss=in_test_ce_loss_all_iters)
-    np.savez(f"{opt.save_dir}/out_ce_loss_{opt.n}_iters.npz", out_ce_loss=out_test_ce_loss_all_iters)
-    np.savez(f"{opt.save_dir}/cal_ce_loss_{opt.n}_iters.npz", ce_loss=cal_set_ce_loss_all_iter)
+        # Find maximum trace length for padding
+        max_trace_len = max(
+            max(len(trace) for trace in in_test_ce_loss),
+            max(len(trace) for trace in out_test_ce_loss)
+        )
 
-    for iter in range(opt.n):
-        in_e_values_all_traces = []
-        in_test_ce_loss = in_test_ce_loss_all_iters[iter]
-        for test_idx in range(len(in_test_ce_loss)):
-            in_e_values = [calc_e_value(in_test_ce_loss[test_idx][window_idx], cal_set_ce_loss_all_iter[iter])
-                           for window_idx in range(len(in_test_ce_loss[test_idx]))]
-            in_e_values_all_traces.append(np.array(in_e_values))
-        np.savez(f"{opt.save_dir}/in_e_values_iter{iter+1}.npz", e_values=np.array(in_e_values_all_traces))
+        # Pad in-distribution and out-distribution losses to the maximum length
+        in_test_ce_loss_padded = [np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in in_test_ce_loss]
+        out_test_ce_loss_padded = [np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in out_test_ce_loss]
 
-    for iter in range(opt.n):
-        out_e_values_all_traces = []
-        out_test_ce_loss = out_test_ce_loss_all_iters[iter]
-        for test_idx in range(len(out_test_ce_loss)):
-            out_e_values = [calc_e_value(out_test_ce_loss[test_idx][window_idx], cal_set_ce_loss_all_iter[iter])
-                            for window_idx in range(len(out_test_ce_loss[test_idx]))]
-            out_e_values_all_traces.append(np.array(out_e_values))
-        np.savez(f"{opt.save_dir}/out_e_values_iter{iter+1}.npz", e_values=np.array(out_e_values_all_traces))
+        # Combine In-Distribution and Out-Distribution Test Losses after padding
+        combined_test_losses = np.concatenate((in_test_ce_loss_padded, out_test_ce_loss_padded), axis=0)
+
+        # Flatten combined test losses and calibration losses to ensure consistent dimensions
+        combined_test_losses_flat = combined_test_losses.flatten()
+        cal_set_ce_loss_flat = np.array(cal_set_ce_loss_all_iter[iter]).flatten()
+
+        # Calculate Threshold for E-value Computation
+        threshold = compute_threshold(combined_test_losses_flat, cal_set_ce_loss_flat, level=0.2)
+        thresholds.append(threshold)
+    
+    # Save padded CE Losses for further processing
+    in_test_ce_loss_all_iters = np.array([np.array([np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]) for iter_losses in in_test_ce_loss_all_iters])
+    out_test_ce_loss_all_iters = np.array([np.array([np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]) for iter_losses in out_test_ce_loss_all_iters])
+
+    # Save CE Losses
+    np.savez(f"{opt.save_dir}/in_ce_loss_{n}_iters.npz", in_ce_loss=in_test_ce_loss_all_iters)
+    np.savez(f"{opt.save_dir}/out_ce_loss_{n}_iters.npz", out_ce_loss=out_test_ce_loss_all_iters)
+    np.savez(f"{opt.save_dir}/cal_ce_loss_{n}_iters.npz", ce_loss=cal_set_ce_loss_all_iter)
+
+    ############################################################################################################
+    # E-value Calculation and P-value Conversion
+    for iter in range(n):
+        # In-Distribution E-values and P-values
+        in_evalues_all_traces = []
+        in_p_values_all_traces = []
+
+        # Calculate calibration E-values once per iteration
+        cal_evalues = compute_evalue(cal_set_ce_loss_all_iter[iter], cal_set_ce_loss_all_iter[iter], thresholds[iter])
+
+        for test_idx in range(len(in_test_ce_loss_all_iters[iter])):
+            # Compute E-values for each window in the in-distribution test data
+            in_evalues = compute_evalue(in_test_ce_loss_all_iters[iter][test_idx], cal_set_ce_loss_all_iter[iter], thresholds[iter])
+            in_evalues_all_traces.append(in_evalues)
+
+            # Convert E-values to P-values using the calibration E-values
+            in_p_values = evalue_to_pvalue(in_evalues, cal_evalues)
+            in_p_values_all_traces.append(in_p_values)
+
+        # Save In-Distribution P-values
+        np.savez(f"{opt.save_dir}/in_p_values_iter{iter+1}.npz", p_values=np.array(in_p_values_all_traces))
+
+        ########################################################################################################
+
+        # Out-Distribution E-values and P-values
+        out_evalues_all_traces = []
+        out_p_values_all_traces = []
+
+        for test_idx in range(len(out_test_ce_loss_all_iters[iter])):
+            # Compute E-values for each window in the out-of-distribution test data
+            out_evalues = compute_evalue(out_test_ce_loss_all_iters[iter][test_idx], cal_set_ce_loss_all_iter[iter], thresholds[iter])
+            out_evalues_all_traces.append(out_evalues)
+
+            # Convert E-values to P-values using the calibration E-values
+            out_p_values = evalue_to_pvalue(out_evalues, cal_evalues)
+            out_p_values_all_traces.append(out_p_values)
+
+        # Save Out-Distribution P-values
+        np.savez(f"{opt.save_dir}/out_p_values_iter{iter+1}.npz", p_values=np.array(out_p_values_all_traces))
+
+    print("All p-values and CE losses saved successfully.")
+
+    
+
+def calc_fisher_value(t_value, eval_n):
+    if t_value <= 0:
+        return np.nan  # Avoid invalid log operations
+
+    summation = 0
+    for i in range(eval_n):  # Calculating Fisher value for the window in the datapoint
+        summation += ((-np.log(t_value))**i) / np.math.factorial(i)
+    return t_value * summation
+
+
+def calc_fisher_batch(p_values, eval_n):  # p_values is 3D
+    # Initialize output as a 2D list for each datapoint: number of datapoints x number of windows in each datapoint
+    output = [[None] * len(window) for window in p_values[0]]
+    
+    for i in range(len(p_values[0])):  # Iterating over test datapoints
+        for j in range(len(p_values[0][i])):  # Iterating over p-values for windows in the test datapoint
+            prod = 1.0
+            for k in range(eval_n):
+               
+                if isinstance(p_values[k][i][j], (list, np.ndarray)):
+                    prod *= p_values[k][i][j][0]  # Access first element if it's an array
+                else:
+                    prod *= p_values[k][i][j]  # Use directly if it's a scalar
+            
+            # Calculate the Fisher value
+            output[i][j] = calc_fisher_value(prod, eval_n)
+
+    return output  # A 2D Fisher value output for each window in each test datapoint
+
 
 def eval_detection_fisher(eval_n):
-    in_e, out_e = [], []
-    for iter in range(eval_n):
-        in_e.append(np.load(f"{opt.save_dir}/in_e_values_iter{iter+1}.npz", allow_pickle=True)['e_values'])
-        out_e.append(np.load(f"{opt.save_dir}/out_e_values_iter{iter+1}.npz", allow_pickle=True)['e_values'])
+    #pdb.set_trace()
+    in_p = [] # 3D
+    out_p = [] # 3D
+    for iter in range(0, eval_n):
+        in_p.append(np.load("{}/in_p_values_iter{}.npz".format(opt.save_dir, iter+1), allow_pickle=True)['p_values'])
+        out_p.append(np.load("{}/out_p_values_iter{}.npz".format(opt.save_dir, iter+1), allow_pickle=True)['p_values'])
 
-    in_fisher_values = calc_fisher_batch_e(in_e, eval_n)
-    out_fisher_values = calc_fisher_batch_e(out_e, eval_n)
+    in_fisher_values = calc_fisher_batch(in_p, eval_n) # a 2D fisher value output for each window in each iD test datapoint
+    out_fisher_values = calc_fisher_batch(out_p, eval_n) # a 2D fisher value output for each window in each OOD test datapoint
+    # pdb.set_trace()
 
-    in_fisher_per_win = [in_fisher_values[trace_idx][win_idx] for trace_idx in range(len(in_fisher_values))
-                         for win_idx in range(len(in_fisher_values[trace_idx]))]
-    out_fisher_per_win = [out_fisher_values[trace_idx][win_idx] for trace_idx in range(len(out_fisher_values))
-                          for win_idx in range(len(out_fisher_values[trace_idx]))]
+    in_fisher_per_win = []
+    for trace_idx in range(len(in_fisher_values)): # iterating over each iD trace
+        for win_idx in range(len(in_fisher_values[trace_idx])): # iterating over each window in the trace
+            in_fisher_per_win.append(in_fisher_values[trace_idx][win_idx])
+    in_fisher_per_win = np.array(in_fisher_per_win)
 
-    np.savez(f"{opt.save_dir}/in_fisher_iter{iter+1}.npz", in_fisher_values_win=np.array(in_fisher_per_win))
-    np.savez(f"{opt.save_dir}/out_fisher_iter{iter+1}.npz", out_fisher_values_win=np.array(out_fisher_per_win))
-    return np.array(in_fisher_per_win), np.array(out_fisher_per_win)
+    out_fisher_per_win = []
+    for trace_idx in range(len(out_fisher_values)): # iterating over each OOD trace
+        for win_idx in range(len(out_fisher_values[trace_idx])): # iterating over each window in the trace
+            out_fisher_per_win.append(out_fisher_values[trace_idx][win_idx])
+    out_fisher_per_win = np.array(out_fisher_per_win)
+
+    np.savez("{}/in_fisher_iter{}.npz".format(opt.save_dir, iter+1), in_fisher_values_win=in_fisher_per_win)
+    np.savez("{}/out_fisher_iter{}.npz".format(opt.save_dir, iter+1), out_fisher_values_win=out_fisher_per_win)
+
+    #out_min_fisher_index_per_trace = [d.index(min(d)) for d in out_fisher_values]
+    #print("Detection at frames: ", out_min_fisher_index_per_trace)
+    # first_ood_frame_per_trace = [77, 46, 61, 50, 79, 64, 60, 57, 40, 57, 58, 46, 99, 86, 82, 83, 53, 54, 55, 46, 72, 57, 61, 42, 41, 56, 44, 36, 67, 70, 71, 50, 73, 85, 70, 53, 84, 79, 49, 78, 48, 81, 58, 43, 104, 72, 65, 65, 45, 87, 46, 39, 77, 50, 80, 38, 62, 59, 71, 61, 52, 49, 63, 52, 68, 82, 92, 66, 47, 53, 54, 55, 41] # the frame no. at which precipitation >= 20
+    # print("Detection delay: ", np.array(out_min_fisher_index_per_trace)-np.array(first_ood_frame_per_trace))
+
+    
+    return in_fisher_per_win, out_fisher_per_win
 
 def getAUROC(in_fisher_values, out_fisher_values):
+    # Combine Fisher values
     fisher_values = np.concatenate((in_fisher_values, out_fisher_values))
-    label = np.concatenate((np.ones(len(in_fisher_values)), np.zeros(len(out_fisher_values))))
-    return roc_auc_score(label, fisher_values) * 100
+
+    # Combine labels
+    indist_label = np.ones(len(in_fisher_values))
+    ood_label = np.zeros(len(out_fisher_values))
+    label = np.concatenate((indist_label, ood_label))
+
+    # Check for NaN values and remove them
+    valid_indices = ~np.isnan(fisher_values)
+    fisher_values = fisher_values[valid_indices]
+    label = label[valid_indices]
+
+    # Calculate AUROC
+    from sklearn.metrics import roc_auc_score
+    au_roc = roc_auc_score(label, fisher_values) * 100
+    return au_roc
 
 def getTNR(in_fisher_values, out_fisher_values):
-    tau = np.sort(in_fisher_values)[::-1][int(0.95 * len(in_fisher_values))]
-    return 100 * (len(out_fisher_values[out_fisher_values < tau]) / len(out_fisher_values))
+
+    in_fisher = np.sort(in_fisher_values)[::-1] # sorting in descending order
+    tau = in_fisher[int(0.95*len(in_fisher))] # TNR at 95% TPR
+    tnr = 100*(len(out_fisher_values[out_fisher_values<tau])/len(out_fisher_values))
+
+    return tnr
+
 
 if __name__ == "__main__":
     torch.manual_seed(opt.seed)
     np.random.seed(opt.seed)
     random.seed(opt.seed)
-    auroc_all_trials, tnr_all_trials = [], []
+    auroc_all_trials = []
+    tnr_all_trials = []
     for trial in range(opt.trials):
-        auroc_one_trial, tnr_one_trial = [], []
+        auroc_one_trial = []
+        tnr_one_trial = []
+        if opt.check_ood:
+            checkOOD()#uncomment this for calculating the p-values and fisher values of the calibration and test data from scratch, it takes time to calculate these
         for i in range(opt.n):
-            in_fisher_per_win, out_fisher_per_win = eval_detection_fisher(i + 1)
-            auroc_one_trial.append(getAUROC(in_fisher_per_win, out_fisher_per_win))
-            tnr_one_trial.append(getTNR(in_fisher_per_win, out_fisher_per_win))
+            print("Calculating results for n: {} from the saved fisher-values".format(i+1))
+            #print(i)
+            in_fisher_values_per_win, out_fisher_values_per_win = eval_detection_fisher(i+1)
+            au_roc = getAUROC(in_fisher_values_per_win, out_fisher_values_per_win)
+            auroc_one_trial.append(au_roc)
+            tnr = getTNR(in_fisher_values_per_win, out_fisher_values_per_win)
+            tnr_one_trial.append(tnr)
+            #print("For trial: {}, n: {}, AUROC: {}".format(trial+1, i+1, au_roc))
+            #print("For trial: {}, n: {}, TNR: {}".format(trial+1, i+1, tnr))
         auroc_all_trials.append(auroc_one_trial)
         tnr_all_trials.append(tnr_one_trial)
 
-    auroc_all_trials, tnr_all_trials = np.array(auroc_all_trials), np.array(tnr_all_trials)
-    print("AUROC for CODiT(n=20) on Drift dataset with w=16: ", np.mean(auroc_all_trials, 0)[-1])
-    print("TNR for CODiT(n=20) on Drift dataset with w=16: ", np.mean(tnr_all_trials, 0)[-1])
+    auroc_all_trials = np.array(auroc_all_trials)
+    tnr_all_trials = np.array(tnr_all_trials)
+
+    #print("Printing results for n = 1 to {}".format(opt.n))
+    print("AUROC for CODiT(n=20) on Drift dataset with w=16: ", np.mean(auroc_all_trials,0)[-1])
+    # print(np.std(auroc_all_trials,0))
+
+    print("TNR for CODiT(n=20) on Drift dataset with w=16: ", np.mean(tnr_all_trials,0)[-1])
