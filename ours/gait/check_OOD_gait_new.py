@@ -227,6 +227,8 @@ def calc_p_value(test_ce_loss, cal_set_ce_loss):
     return p_value
 
 
+import numpy as np
+
 def checkOOD(n=opt.n):
     # Calibration CE Loss
     cal_dataset = GAIT(root_dir=opt.cal_root_dir, win_len=opt.wl, train=False, cal=True, in_dist_test=False, transformation_list=opt.transformation_list)
@@ -261,27 +263,26 @@ def checkOOD(n=opt.n):
         out_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device, test_dataset=out_test_dataset, in_dist=False)
         out_test_ce_loss_all_iters.append(out_test_ce_loss)
 
-        # Combine In-Distribution and Out-Distribution Test Losses
-        combined_test_losses = np.concatenate((in_test_ce_loss, out_test_ce_loss), axis=0)
+        # Find maximum trace length for padding
+        max_trace_len = max(
+            max(len(trace) for trace in in_test_ce_loss),
+            max(len(trace) for trace in out_test_ce_loss)
+        )
+
+        # Pad in-distribution and out-distribution losses to the maximum length
+        in_test_ce_loss_padded = [np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in in_test_ce_loss]
+        out_test_ce_loss_padded = [np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in out_test_ce_loss]
+
+        # Combine In-Distribution and Out-Distribution Test Losses after padding
+        combined_test_losses = np.concatenate((in_test_ce_loss_padded, out_test_ce_loss_padded), axis=0)
 
         # Calculate Threshold for E-value Computation
         threshold = compute_threshold(combined_test_losses, cal_set_ce_loss_all_iter[iter], level=0.2)
         thresholds.append(threshold)
     
-    # Pad CE Loss Arrays
-    max_trace_len_in = max(max(len(trace) for trace in iter_losses) for iter_losses in in_test_ce_loss_all_iters)
-    in_test_ce_loss_all_iters = [
-        [np.pad(trace, (0, max_trace_len_in - len(trace)), constant_values=np.nan) for trace in iter_losses]
-        for iter_losses in in_test_ce_loss_all_iters
-    ]
-    in_test_ce_loss_all_iters = np.array(in_test_ce_loss_all_iters)
-
-    max_trace_len_out = max(max(len(trace) for trace in iter_losses) for iter_losses in out_test_ce_loss_all_iters)
-    out_test_ce_loss_all_iters = [
-        [np.pad(trace, (0, max_trace_len_out - len(trace)), constant_values=np.nan) for trace in iter_losses]
-        for iter_losses in out_test_ce_loss_all_iters
-    ]
-    out_test_ce_loss_all_iters = np.array(out_test_ce_loss_all_iters)
+    # Save padded CE Losses for further processing
+    in_test_ce_loss_all_iters = np.array([np.array([np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]) for iter_losses in in_test_ce_loss_all_iters])
+    out_test_ce_loss_all_iters = np.array([np.array([np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]) for iter_losses in out_test_ce_loss_all_iters])
 
     # Save CE Losses
     np.savez(f"{opt.save_dir}/in_ce_loss_{n}_iters.npz", in_ce_loss=in_test_ce_loss_all_iters)
@@ -326,6 +327,7 @@ def checkOOD(n=opt.n):
         np.savez(f"{opt.save_dir}/out_p_values_iter{iter+1}.npz", p_values=np.array(out_p_values_all_traces))
 
     print("All p-values and CE losses saved successfully.")
+
 
     
 
