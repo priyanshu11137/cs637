@@ -45,7 +45,7 @@ parser.add_argument('--in_test_root_dir', type=str, default='data/gait-in-neurod
 parser.add_argument('--out_test_root_dir', type=str, default='data/gait-in-neurodegenerative-disease-database-1.0.0',help='test data directory')
 parser.add_argument('--transformation_list', '--names-list', nargs='+', default=["low_pass", "high_pass", "identity"])
 parser.add_argument('--disease_type', type=str, default='als', help='als/hunt/park/all')
-parser.add_argument('--check_ood', type=bool, default=False, help='true/false')
+
 
 opt = parser.parse_args()
 print(opt)
@@ -71,7 +71,7 @@ net.eval()
 criterion = nn.CrossEntropyLoss()
 import numpy as np
 
-def compute_threshold(test_statistics, null_statistics, level=0.2):
+def compute_threshold(test_statistics, null_statistics, level=0.05):
     """
     Compute the threshold based on the combined test statistics (in-dist + OOD)
     and the null (calibration) statistics. The threshold is determined such
@@ -233,7 +233,7 @@ def checkOOD(n=opt.n):
     cal_dataset = GAIT(root_dir=opt.cal_root_dir, win_len=opt.wl, train=False, cal=True, in_dist_test=False, transformation_list=opt.transformation_list)
     print("Cal dataset len:", cal_dataset.__len__())
     cal_dataloader = DataLoader(cal_dataset, batch_size=opt.bs, shuffle=False, num_workers=opt.workers)
-
+    
     cal_set_ce_loss_all_iter = calc_cal_ce_loss(opt, model=net, criterion=criterion, device=device, cal_dataloader=cal_dataloader)
     
     ############################################################################################################
@@ -249,10 +249,10 @@ def checkOOD(n=opt.n):
     out_test_ce_loss_all_iters = []
     thresholds = []
 
-    # Calculate CE Loss for each iteration
-    print("Calculating CE for OOD and ID test data")
+    # Calculate CE Loss and Thresholds for each iteration
+    print("Calculating CE for OOD and ID test data and computing thresholds")
     for iter in range(n):
-        print(f"Iteration: {iter + 1}")
+        print('Iteration:', iter + 1)
 
         # Calculate CE Loss for In-Distribution Test Data
         in_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device, test_dataset=in_test_dataset)
@@ -262,67 +262,77 @@ def checkOOD(n=opt.n):
         out_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device, test_dataset=out_test_dataset, in_dist=False)
         out_test_ce_loss_all_iters.append(out_test_ce_loss)
 
-    ############################################################################################################
-    # Padding and Saving CE Losses
-    max_trace_len = max(
-        max(max(len(trace) for trace in iter_losses) for iter_losses in in_test_ce_loss_all_iters),
-        max(max(len(trace) for trace in iter_losses) for iter_losses in out_test_ce_loss_all_iters)
-    )
+        # Find maximum trace length for padding
+        max_trace_len = max(
+            max(len(trace) for trace in in_test_ce_loss),
+            max(len(trace) for trace in out_test_ce_loss)
+        )
 
-    # Pad CE losses for consistency
-    in_test_ce_loss_all_iters = np.array([
-        [np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]
-        for iter_losses in in_test_ce_loss_all_iters
-    ])
-    out_test_ce_loss_all_iters = np.array([
-        [np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]
-        for iter_losses in out_test_ce_loss_all_iters
-    ])
+        # Pad in-distribution and out-distribution losses to the maximum length
+        in_test_ce_loss_padded = [np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in in_test_ce_loss]
+        out_test_ce_loss_padded = [np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in out_test_ce_loss]
 
-    # Save CE losses
+        # Combine In-Distribution and Out-Distribution Test Losses after padding
+        combined_test_losses = np.concatenate((in_test_ce_loss_padded, out_test_ce_loss_padded), axis=0)
+
+        # Flatten combined test losses and calibration losses to ensure consistent dimensions
+        combined_test_losses_flat = combined_test_losses.flatten()
+        cal_set_ce_loss_flat = np.array(cal_set_ce_loss_all_iter[iter]).flatten()
+
+        # Calculate Threshold for E-value Computation
+        threshold = compute_threshold(combined_test_losses_flat, cal_set_ce_loss_flat, level=0.2)
+        thresholds.append(threshold)
+    
+    # Save padded CE Losses for further processing
+    in_test_ce_loss_all_iters = np.array([np.array([np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]) for iter_losses in in_test_ce_loss_all_iters])
+    out_test_ce_loss_all_iters = np.array([np.array([np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]) for iter_losses in out_test_ce_loss_all_iters])
+
+    # Save CE Losses
     np.savez(f"{opt.save_dir}/in_ce_loss_{n}_iters.npz", in_ce_loss=in_test_ce_loss_all_iters)
     np.savez(f"{opt.save_dir}/out_ce_loss_{n}_iters.npz", out_ce_loss=out_test_ce_loss_all_iters)
     np.savez(f"{opt.save_dir}/cal_ce_loss_{n}_iters.npz", ce_loss=cal_set_ce_loss_all_iter)
 
     ############################################################################################################
-    # E-value and P-value Calculation
-    print("Calculating E-values and P-values for test data")
+    # E-value Calculation and P-value Conversion
     for iter in range(n):
+        # In-Distribution E-values and P-values
         in_evalues_all_traces = []
-        out_evalues_all_traces = []
         in_p_values_all_traces = []
-        out_p_values_all_traces = []
 
-        # Calibration E-values for the current iteration
+        # Calculate calibration E-values once per iteration
         cal_evalues = compute_evalue(cal_set_ce_loss_all_iter[iter], cal_set_ce_loss_all_iter[iter], thresholds[iter])
 
-        # In-Distribution E-values and P-values
         for test_idx in range(len(in_test_ce_loss_all_iters[iter])):
-            # Compute E-values
+            # Compute E-values for each window in the in-distribution test data
             in_evalues = compute_evalue(in_test_ce_loss_all_iters[iter][test_idx], cal_set_ce_loss_all_iter[iter], thresholds[iter])
             in_evalues_all_traces.append(in_evalues)
 
-            # Convert E-values to P-values
+            # Convert E-values to P-values using the calibration E-values
             in_p_values = evalue_to_pvalue(in_evalues, cal_evalues)
             in_p_values_all_traces.append(in_p_values)
 
         # Save In-Distribution P-values
         np.savez(f"{opt.save_dir}/in_p_values_iter{iter+1}.npz", p_values=np.array(in_p_values_all_traces))
 
+        ########################################################################################################
+
         # Out-Distribution E-values and P-values
+        out_evalues_all_traces = []
+        out_p_values_all_traces = []
+
         for test_idx in range(len(out_test_ce_loss_all_iters[iter])):
-            # Compute E-values
+            # Compute E-values for each window in the out-of-distribution test data
             out_evalues = compute_evalue(out_test_ce_loss_all_iters[iter][test_idx], cal_set_ce_loss_all_iter[iter], thresholds[iter])
             out_evalues_all_traces.append(out_evalues)
 
-            # Convert E-values to P-values
+            # Convert E-values to P-values using the calibration E-values
             out_p_values = evalue_to_pvalue(out_evalues, cal_evalues)
             out_p_values_all_traces.append(out_p_values)
 
         # Save Out-Distribution P-values
         np.savez(f"{opt.save_dir}/out_p_values_iter{iter+1}.npz", p_values=np.array(out_p_values_all_traces))
 
-    print("All P-values and CE losses saved successfully.")
+    print("All p-values and CE losses saved successfully.")
 
     
 
@@ -427,8 +437,7 @@ if __name__ == "__main__":
     for trial in range(opt.trials):
         auroc_one_trial = []
         # tnr_one_trial = []
-        if opt.check_ood:
-            checkOOD()
+        # checkOOD()
         for i in range(opt.n):
             print("Calculating fisher-values for n: ", i+1)
             in_fisher_values_per_win, out_fisher_values_per_win = eval_detection_fisher(i+1)
