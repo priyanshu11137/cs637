@@ -8,6 +8,6 @@ The code available has been corrected and is up and running. It can be run direc
 
 A new file named '/ours/gait/check_ood_gait_new.py' has been added. It's an alternative approach which uses e-values instead of p-value directly for out-of-distribution detection. The model/training steps were not modified to ensure that the approach mentioned in the paper can be directly extended to other datasets. Our work, however, is primarily concerned with the GAIT dataset.
 ### Extending current approach to new application on FGSM attack and presentaing an alternative approach which uses activation function for NCM. 
-AWS_Utilization.ipynb: For the FGSM experiment, activation function NCM experiment
+'ours/AWS_Utilization.ipynb': For the FGSM experiment, activation function NCM experiment
 
 This extends the application of OOD detection using CoDIT to FGSM attacks.
