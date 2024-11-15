@@ -213,7 +213,7 @@ if __name__ == '__main__':
         
             # Save model every 50 epochs regardless
             if epoch % 50 == 0:
-                torch.save(net.state_dict(), os.path.join(log_dir, f'drift_epoch_{epoch}.pt')
+                torch.save(net.state_dict(), os.path.join(log_dir, f'drift_epoch_{epoch}.pt'))
 
     elif args.mode == 'test':  ########### Test #############
         net.load_state_dict(torch.load(args.ckpt))
