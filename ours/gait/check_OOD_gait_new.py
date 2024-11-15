@@ -337,10 +337,14 @@ def checkOOD(n=opt.n):
     
 
 def calc_fisher_value(t_value, eval_n):
+    if t_value <= 0:
+        return np.nan  # Avoid invalid log operations
+
     summation = 0
-    for i in range(eval_n): # calculating fisher value for the window in the datapoint
-        summation += ((-np.log(t_value))**i)/np.math.factorial(i)
-    return t_value*summation 
+    for i in range(eval_n):  # Calculating Fisher value for the window in the datapoint
+        summation += ((-np.log(t_value))**i) / np.math.factorial(i)
+    return t_value * summation
+
 
 def calc_fisher_batch(p_values, eval_n):  # p_values is 3D
     # Initialize output as a 2D list for each datapoint: number of datapoints x number of windows in each datapoint
@@ -350,10 +354,7 @@ def calc_fisher_batch(p_values, eval_n):  # p_values is 3D
         for j in range(len(p_values[0][i])):  # Iterating over p-values for windows in the test datapoint
             prod = 1.0
             for k in range(eval_n):
-                # Debug print to check the structure of p_values[k][i][j]
-                print(f"p_values[{k}][{i}][{j}]:", p_values[k][i][j])
-                
-                # Check if p_values[k][i][j] is a scalar or an array
+               
                 if isinstance(p_values[k][i][j], (list, np.ndarray)):
                     prod *= p_values[k][i][j][0]  # Access first element if it's an array
                 else:
