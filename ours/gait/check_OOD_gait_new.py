@@ -45,7 +45,7 @@ parser.add_argument('--in_test_root_dir', type=str, default='data/gait-in-neurod
 parser.add_argument('--out_test_root_dir', type=str, default='data/gait-in-neurodegenerative-disease-database-1.0.0',help='test data directory')
 parser.add_argument('--transformation_list', '--names-list', nargs='+', default=["low_pass", "high_pass", "identity"])
 parser.add_argument('--disease_type', type=str, default='als', help='als/hunt/park/all')
-
+parser.add_argument('--check_ood', type=bool, default=false, help='true/false')
 
 opt = parser.parse_args()
 print(opt)
@@ -427,7 +427,8 @@ if __name__ == "__main__":
     for trial in range(opt.trials):
         auroc_one_trial = []
         # tnr_one_trial = []
-        # checkOOD()
+        if opt.check_ood:
+            checkOOD()
         for i in range(opt.n):
             print("Calculating fisher-values for n: ", i+1)
             in_fisher_values_per_win, out_fisher_values_per_win = eval_detection_fisher(i+1)
