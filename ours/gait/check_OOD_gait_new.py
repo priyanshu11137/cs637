@@ -227,7 +227,6 @@ def calc_p_value(test_ce_loss, cal_set_ce_loss):
     return p_value
 
 
-import numpy as np
 
 def checkOOD(n=opt.n):
     # Calibration CE Loss
@@ -276,8 +275,12 @@ def checkOOD(n=opt.n):
         # Combine In-Distribution and Out-Distribution Test Losses after padding
         combined_test_losses = np.concatenate((in_test_ce_loss_padded, out_test_ce_loss_padded), axis=0)
 
+        # Flatten combined test losses and calibration losses to ensure consistent dimensions
+        combined_test_losses_flat = combined_test_losses.flatten()
+        cal_set_ce_loss_flat = np.array(cal_set_ce_loss_all_iter[iter]).flatten()
+
         # Calculate Threshold for E-value Computation
-        threshold = compute_threshold(combined_test_losses, cal_set_ce_loss_all_iter[iter], level=0.2)
+        threshold = compute_threshold(combined_test_losses_flat, cal_set_ce_loss_flat, level=0.2)
         thresholds.append(threshold)
     
     # Save padded CE Losses for further processing
@@ -327,7 +330,6 @@ def checkOOD(n=opt.n):
         np.savez(f"{opt.save_dir}/out_p_values_iter{iter+1}.npz", p_values=np.array(out_p_values_all_traces))
 
     print("All p-values and CE losses saved successfully.")
-
 
     
 
