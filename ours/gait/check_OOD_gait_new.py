@@ -342,17 +342,28 @@ def calc_fisher_value(t_value, eval_n):
         summation += ((-np.log(t_value))**i)/np.math.factorial(i)
     return t_value*summation 
 
-def calc_fisher_batch(p_values, eval_n): # p_values is 3D
-    output = [[None]*len(window) for window in p_values[0]] # output is a 2D list for each datapoint, no of datapoints X number of windows in each datapoint
-    for i in range(len(p_values[0])): #iterating over test datapoints
-        for j in range(len(p_values[0][i])): #iterating over p-values for windows in the test datapoint
-            prod = 1
+def calc_fisher_batch(p_values, eval_n):  # p_values is 3D
+    # Initialize output as a 2D list for each datapoint: number of datapoints x number of windows in each datapoint
+    output = [[None] * len(window) for window in p_values[0]]
+    
+    for i in range(len(p_values[0])):  # Iterating over test datapoints
+        for j in range(len(p_values[0][i])):  # Iterating over p-values for windows in the test datapoint
+            prod = 1.0
             for k in range(eval_n):
-                prod*=p_values[k][i][j][0]
-
+                # Debug print to check the structure of p_values[k][i][j]
+                print(f"p_values[{k}][{i}][{j}]:", p_values[k][i][j])
+                
+                # Check if p_values[k][i][j] is a scalar or an array
+                if isinstance(p_values[k][i][j], (list, np.ndarray)):
+                    prod *= p_values[k][i][j][0]  # Access first element if it's an array
+                else:
+                    prod *= p_values[k][i][j]  # Use directly if it's a scalar
+            
+            # Calculate the Fisher value
             output[i][j] = calc_fisher_value(prod, eval_n)
 
-    return output  # a 2D fisher value output for each window in each test datapoint
+    return output  # A 2D Fisher value output for each window in each test datapoint
+
 
 def eval_detection_fisher(eval_n):
     #pdb.set_trace()
