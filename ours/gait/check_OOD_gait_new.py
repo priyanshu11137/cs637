@@ -45,6 +45,7 @@ parser.add_argument('--in_test_root_dir', type=str, default='data/gait-in-neurod
 parser.add_argument('--out_test_root_dir', type=str, default='data/gait-in-neurodegenerative-disease-database-1.0.0',help='test data directory')
 parser.add_argument('--transformation_list', '--names-list', nargs='+', default=["low_pass", "high_pass", "identity"])
 parser.add_argument('--disease_type', type=str, default='als', help='als/hunt/park/all')
+parser.add_argument('--check_ood', type=bool, default=False, help='true/false')
 
 
 opt = parser.parse_args()
@@ -69,6 +70,59 @@ net.eval()
 # pdb.set_trace()
 
 criterion = nn.CrossEntropyLoss()
+import numpy as np
+
+def compute_threshold(test_statistics, null_statistics, level=0.05):
+    """
+    Compute the threshold based on the combined test statistics (in-dist + OOD)
+    and the null (calibration) statistics. The threshold is determined such
+    that the false discovery proportion (FDP) is controlled at the given level.
+    """
+    n, m = len(null_statistics), len(test_statistics)
+    mixed_statistics = np.concatenate([null_statistics, test_statistics])
+    sample_ind = np.concatenate([np.ones(len(null_statistics)), np.zeros(len(test_statistics))])
+
+    sample_ind_sort = sample_ind[np.argsort(-mixed_statistics)]
+    fdp = 1
+    V = n
+    K = m
+    l = m + n
+
+    while fdp > level and K >= 1:
+        l -= 1
+        if sample_ind_sort[l] == 1:
+            V -= 1
+        else:
+            K -= 1
+        fdp = (V * m) / (n * K) if K else 1
+
+    mixed_statistics_sort_ind = np.argsort(-mixed_statistics)
+    if fdp > level:
+        threshold = mixed_statistics[mixed_statistics_sort_ind[0]] + 1
+    else:
+        threshold = mixed_statistics[mixed_statistics_sort_ind[l-1]]
+    
+    return threshold
+
+
+def compute_evalue(test_statistics, null_statistics, t):
+    """
+    Compute the e-values based on test statistics and calibration (null) statistics
+    with respect to a threshold t.
+    """
+    denominator = (1 + np.sum(null_statistics >= t)) / (1 + null_statistics.shape[0])
+    evalues = ((test_statistics >= t).astype(int) / denominator)
+    return evalues
+
+
+def evalue_to_pvalue(evalues, cal_evalues):
+    """
+    Convert e-values to p-values using the empirical cumulative distribution
+    of calibration e-values.
+    """
+    p_values = [(np.sum(cal_evalues >= e) / len(cal_evalues)) for e in evalues]
+    return np.array(p_values)
+
 
 def calc_test_ce_loss(opt, model, criterion, device, test_dataset, in_dist=True):
     torch.set_grad_enabled(False)
@@ -173,158 +227,145 @@ def calc_p_value(test_ce_loss, cal_set_ce_loss):
 
     return p_value
 
-def checkOOD(n = opt.n):  
 
-    # CAL set CE Loss
-    # orig_train_dataset = CARLAVCOPDataset(root_dir='CARLA_dataset/Vanderbilt_data/training', win_len=opt.wl,  train=True, transforms_= transforms, img_size=opt.img_size)
 
-    # train_dataset, cal_dataset = random_split(orig_train_dataset, (len(orig_train_dataset)-13, 13), generator=torch.Generator().manual_seed(42)) # split cal_set for 13 videos, we have a total of 33 videos, so training was done on 20 videos
-    
+def checkOOD(n=opt.n):
+    # Calibration CE Loss
     cal_dataset = GAIT(root_dir=opt.cal_root_dir, win_len=opt.wl, train=False, cal=True, in_dist_test=False, transformation_list=opt.transformation_list)
-
-    print("Cal dataset len: ", cal_dataset.__len__())
-
+    print("Cal dataset len:", cal_dataset.__len__())
     cal_dataloader = DataLoader(cal_dataset, batch_size=opt.bs, shuffle=False, num_workers=opt.workers)
-
-    # print("train_dataset_indices: {}, cal_dataset_indices: {}".format(train_dataset.indices, cal_dataset.indices))
     
-    cal_set_ce_loss_all_iter = calc_cal_ce_loss(opt, model=net, criterion=criterion, device=device, cal_dataloader=cal_dataloader) # cal_set_ce_loss_all_iter = 2D vector with opt.n verctors, each vector contains loss for all calibration datapoints
-
+    cal_set_ce_loss_all_iter = calc_cal_ce_loss(opt, model=net, criterion=criterion, device=device, cal_dataloader=cal_dataloader)
+    
     ############################################################################################################
     
-    # In-Dist test CE loss
-    # in_test_dataset = CARLAVCOPDataset('CARLA_dataset/Vanderbilt_data/testing', win_len=opt.wl, train=False, transforms_= transforms, img_size=opt.img_size, in_dist_test=True)
+    # In-Dist and OOD Test CE Losses
     in_test_dataset = GAIT(root_dir=opt.in_test_root_dir, win_len=opt.wl, train=False, cal=False, in_dist_test=True, transformation_list=opt.transformation_list)
-
-    print("In test dataset len: ", in_test_dataset.__len__())
+    print("In test dataset len:", in_test_dataset.__len__())
+    
+    out_test_dataset = GAIT(root_dir=opt.out_test_root_dir, win_len=opt.wl, train=False, cal=False, in_dist_test=False, transformation_list=opt.transformation_list, disease_type=opt.disease_type)
+    print("Out test dataset len:", out_test_dataset.__len__())
+    
     in_test_ce_loss_all_iters = []
-    print("Calculating CE loss for in-dist test data n times")
-    for iter in range(0, opt.n):
-        print('n: ',iter+1)
-        in_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device, test_dataset=in_test_dataset) # in_test_ce_loss = 2D vector with number of losses for each datapoint = no of windows in the datapoint
-        in_test_ce_loss_all_iters.append(in_test_ce_loss)
-    # in_test_ce_loss_all_iters = np.array(in_test_ce_loss_all_iters) # 3D array
-    max_trace_len = max(max(len(trace) for trace in iter_losses) for iter_losses in in_test_ce_loss_all_iters)
-    in_test_ce_loss_all_iters = [
-        [np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]
-        for iter_losses in in_test_ce_loss_all_iters
-    ]
-    in_test_ce_loss_all_iters = np.array(in_test_ce_loss_all_iters)
-
-
-    #############################################################################################################
-    
-    # Out-Dist CE loss
-    # out_test_dataset = CARLAVCOPDataset('CARLA_dataset/Vanderbilt_data/testing', win_len=opt.wl, train=False, transforms_= transforms, img_size=opt.img_size, in_dist_test=False)
-    out_test_dataset = GAIT(root_dir=opt.out_test_root_dir, win_len=opt.wl, train=False, cal=False,  in_dist_test=False, transformation_list=opt.transformation_list, disease_type=opt.disease_type)
-    
-    print("Out test dataset len: ", out_test_dataset.__len__())
-
     out_test_ce_loss_all_iters = []
-    print("Calculating CE For OOD test data n times")
-    for iter in range(0, opt.n):
-        print('n: ',iter+1)
-        out_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device, test_dataset=out_test_dataset, in_dist=False) # out_test_ce_loss = 2D vector with number of losses for each datapoint = no of windows in the datapoint
-        #print("Out loss: ", out_test_ce_loss)
+    thresholds = []
+
+    # Calculate CE Loss and Thresholds for each iteration
+    print("Calculating CE for OOD and ID test data and computing thresholds")
+    for iter in range(n):
+        print('Iteration:', iter + 1)
+
+        # Calculate CE Loss for In-Distribution Test Data
+        in_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device, test_dataset=in_test_dataset)
+        in_test_ce_loss_all_iters.append(in_test_ce_loss)
+
+        # Calculate CE Loss for Out-Distribution Test Data
+        out_test_ce_loss = calc_test_ce_loss(opt, model=net, criterion=criterion, device=device, test_dataset=out_test_dataset, in_dist=False)
         out_test_ce_loss_all_iters.append(out_test_ce_loss)
-    # out_test_ce_loss_all_iters = np.array(out_test_ce_loss_all_iters) # 3D array
-    max_out_trace_len = max(max(len(trace) for trace in iter_losses) for iter_losses in out_test_ce_loss_all_iters)
-    out_test_ce_loss_all_iters = [
-        [np.pad(trace, (0, max_out_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]
-        for iter_losses in out_test_ce_loss_all_iters
-    ]
-    out_test_ce_loss_all_iters = np.array(out_test_ce_loss_all_iters)
 
-    ############################################################################################################
+        # Find maximum trace length for padding
+        max_trace_len = max(
+            max(len(trace) for trace in in_test_ce_loss),
+            max(len(trace) for trace in out_test_ce_loss)
+        )
+
+        # Pad in-distribution and out-distribution losses to the maximum length
+        in_test_ce_loss_padded = [np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in in_test_ce_loss]
+        out_test_ce_loss_padded = [np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in out_test_ce_loss]
+
+        # Combine In-Distribution and Out-Distribution Test Losses after padding
+        combined_test_losses = np.concatenate((in_test_ce_loss_padded, out_test_ce_loss_padded), axis=0)
+
+        # Flatten combined test losses and calibration losses to ensure consistent dimensions
+        combined_test_losses_flat = combined_test_losses.flatten()
+        cal_set_ce_loss_flat = np.array(cal_set_ce_loss_all_iter[iter]).flatten()
+
+        # Calculate Threshold for E-value Computation
+        threshold = compute_threshold(combined_test_losses_flat, cal_set_ce_loss_flat, level=0.2)
+        thresholds.append(threshold)
     
-    # Saving CE losses
-    np.savez("{}/in_ce_loss_{}_iters.npz".format(opt.save_dir, opt.n), in_ce_loss=in_test_ce_loss_all_iters)
-    np.savez("{}/out_ce_loss_{}_iters.npz".format(opt.save_dir, opt.n), out_ce_loss=out_test_ce_loss_all_iters)
-    np.savez("{}/cal_ce_loss_{}_iters.npz".format(opt.save_dir, opt.n), ce_loss=cal_set_ce_loss_all_iter)
+    # Save padded CE Losses for further processing
+    in_test_ce_loss_all_iters = np.array([np.array([np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]) for iter_losses in in_test_ce_loss_all_iters])
+    out_test_ce_loss_all_iters = np.array([np.array([np.pad(trace, (0, max_trace_len - len(trace)), constant_values=np.nan) for trace in iter_losses]) for iter_losses in out_test_ce_loss_all_iters])
+
+    # Save CE Losses
+    np.savez(f"{opt.save_dir}/in_ce_loss_{n}_iters.npz", in_ce_loss=in_test_ce_loss_all_iters)
+    np.savez(f"{opt.save_dir}/out_ce_loss_{n}_iters.npz", out_ce_loss=out_test_ce_loss_all_iters)
+    np.savez(f"{opt.save_dir}/cal_ce_loss_{n}_iters.npz", ce_loss=cal_set_ce_loss_all_iter)
 
     ############################################################################################################
-    # in-dist n p-values
-    print("Calculating n p-values for in-dist test data")
-    # pdb.set_trace()
-    for iter in range(0, opt.n): # n iterations
+    # E-value Calculation and P-value Conversion
+    for iter in range(n):
+        # In-Distribution E-values and P-values
+        in_evalues_all_traces = []
         in_p_values_all_traces = []
-        in_test_ce_loss = in_test_ce_loss_all_iters[iter]
-        for test_idx in range(0, len(in_test_ce_loss)): # iteration over test datapoints
-            in_p_values = []
-            for window_idx in range(0, len(in_test_ce_loss[test_idx])): # iteration over windows of a test datapoint
-                in_p_values.append(calc_p_value(in_test_ce_loss[test_idx][window_idx], cal_set_ce_loss_all_iter[iter]))
-            in_p_values_all_traces.append(np.array(in_p_values))
-        np.savez("{}/in_p_values_iter{}.npz".format(opt.save_dir, iter+1), p_values=np.array(in_p_values_all_traces))
 
-    ############################################################################################################
+        # Calculate calibration E-values once per iteration
+        cal_evalues = compute_evalue(cal_set_ce_loss_all_iter[iter], cal_set_ce_loss_all_iter[iter], thresholds[iter])
 
-    # out-dist p-values
-    print("Calculating n p-values for OOD test data")
-    for iter in range(0, opt.n): # n iterations
+        for test_idx in range(len(in_test_ce_loss_all_iters[iter])):
+            # Compute E-values for each window in the in-distribution test data
+            in_evalues = compute_evalue(in_test_ce_loss_all_iters[iter][test_idx], cal_set_ce_loss_all_iter[iter], thresholds[iter])
+            in_evalues_all_traces.append(in_evalues)
+
+            # Convert E-values to P-values using the calibration E-values
+            in_p_values = evalue_to_pvalue(in_evalues, cal_evalues)
+            in_p_values_all_traces.append(in_p_values)
+
+        # Save In-Distribution P-values
+        np.savez(f"{opt.save_dir}/in_p_values_iter{iter+1}.npz", p_values=np.array(in_p_values_all_traces))
+
+        ########################################################################################################
+
+        # Out-Distribution E-values and P-values
+        out_evalues_all_traces = []
         out_p_values_all_traces = []
-        out_test_ce_loss = out_test_ce_loss_all_iters[iter]
-        for test_idx in range(0, len(out_test_ce_loss)): # iter over all test datapoints
-            out_p_values = []
-            for window_idx in range(0, len(out_test_ce_loss[test_idx])): # iteration over windows of the test datapoint
-                out_p_values.append(calc_p_value(out_test_ce_loss[test_idx][window_idx], cal_set_ce_loss_all_iter[iter]))
-            out_p_values_all_traces.append(np.array(out_p_values))
-        np.savez("{}/out_p_values_iter{}.npz".format(opt.save_dir, iter+1), p_values=np.array(out_p_values_all_traces))
-    
-# def eval_detection(eval_n):
-#     in_p = []
-#     out_p = []
-#     for iter in range(0, opt.n):
-#         in_p.append(np.load("in_p_values_iter{}.npz".format(iter+1), allow_pickle=True)['p_values'])
-#         out_p.append(np.load("out_p_values_iter{}.npz".format(iter+1), allow_pickle=True)['p_values'])
 
-#     in_p_values = in_p[0]
-#     out_p_values = out_p[0]
-    
-#     for i in range(1, eval_n):
-#         for j in range(0, len(in_p[i])):
-#             in_p_values[j] += in_p[i][j]
-    
-#     for i in range(1, eval_n):
-#         for j in range(0, len(out_p[i])):
-#             out_p_values[j] += out_p[i][j]
+        for test_idx in range(len(out_test_ce_loss_all_iters[iter])):
+            # Compute E-values for each window in the out-of-distribution test data
+            out_evalues = compute_evalue(out_test_ce_loss_all_iters[iter][test_idx], cal_set_ce_loss_all_iter[iter], thresholds[iter])
+            out_evalues_all_traces.append(out_evalues)
 
-#     # false detection 
-#     counter_fd_traces = 0
-#     for i in range(0, len(in_p_values)): # iterating over all test iD traces, in_p_values is a 2D list
-#         for j in range(0, len(in_p_values[i])): # iterating over all windows in the test trace
-#             if in_p_values[i][j] == 0:
-#                 counter_fd_traces += 1
-#                 break
-    
-#     print("No. of false detection traces: ", counter_fd_traces)
+            # Convert E-values to P-values using the calibration E-values
+            out_p_values = evalue_to_pvalue(out_evalues, cal_evalues)
+            out_p_values_all_traces.append(out_p_values)
 
-#     # positive detection 
-#     counter_pd_traces = 0
-#     for i in range(0, len(out_p_values)): # iterationg over all test OOD traces, out_p_values is a 2D list
-#         for j in range(0, len(out_p_values[i])): # iterating over all windows in the test trace
-#             if out_p_values[i][j] == 0:
-#                 counter_pd_traces += 1
-#                 break
+        # Save Out-Distribution P-values
+        np.savez(f"{opt.save_dir}/out_p_values_iter{iter+1}.npz", p_values=np.array(out_p_values_all_traces))
+
+    print("All p-values and CE losses saved successfully.")
+
     
-#     print("No. of positive detection traces: ", counter_pd_traces)
 
 def calc_fisher_value(t_value, eval_n):
+    if t_value <= 0:
+        return np.nan  # Avoid invalid log operations
+
     summation = 0
-    for i in range(eval_n): # calculating fisher value for the window in the datapoint
-        summation += ((-np.log(t_value))**i)/np.math.factorial(i)
-    return t_value*summation 
+    for i in range(eval_n):  # Calculating Fisher value for the window in the datapoint
+        summation += ((-np.log(t_value))**i) / np.math.factorial(i)
+    return t_value * summation
 
-def calc_fisher_batch(p_values, eval_n): # p_values is 3D
-    output = [[None]*len(window) for window in p_values[0]] # output is a 2D list for each datapoint, no of datapoints X number of windows in each datapoint
-    for i in range(len(p_values[0])): #iterating over test datapoints
-        for j in range(len(p_values[0][i])): #iterating over p-values for windows in the test datapoint
-            prod = 1
+
+def calc_fisher_batch(p_values, eval_n):  # p_values is 3D
+    # Initialize output as a 2D list for each datapoint: number of datapoints x number of windows in each datapoint
+    output = [[None] * len(window) for window in p_values[0]]
+    
+    for i in range(len(p_values[0])):  # Iterating over test datapoints
+        for j in range(len(p_values[0][i])):  # Iterating over p-values for windows in the test datapoint
+            prod = 1.0
             for k in range(eval_n):
-                prod*=p_values[k][i][j][0]
-
+               
+                if isinstance(p_values[k][i][j], (list, np.ndarray)):
+                    prod *= p_values[k][i][j][0]  # Access first element if it's an array
+                else:
+                    prod *= p_values[k][i][j]  # Use directly if it's a scalar
+            
+            # Calculate the Fisher value
             output[i][j] = calc_fisher_value(prod, eval_n)
 
-    return output  # a 2D fisher value output for each window in each test datapoint
+    return output  # A 2D Fisher value output for each window in each test datapoint
+
 
 def eval_detection_fisher(eval_n):
     #pdb.set_trace()
@@ -362,14 +403,22 @@ def eval_detection_fisher(eval_n):
     return in_fisher_per_win, out_fisher_per_win
 
 def getAUROC(in_fisher_values, out_fisher_values):
+    # Combine Fisher values
     fisher_values = np.concatenate((in_fisher_values, out_fisher_values))
 
+    # Combine labels
     indist_label = np.ones(len(in_fisher_values))
     ood_label = np.zeros(len(out_fisher_values))
     label = np.concatenate((indist_label, ood_label))
 
+    # Check for NaN values and remove them
+    valid_indices = ~np.isnan(fisher_values)
+    fisher_values = fisher_values[valid_indices]
+    label = label[valid_indices]
+
+    # Calculate AUROC
     from sklearn.metrics import roc_auc_score
-    au_roc = roc_auc_score(label, fisher_values)*100
+    au_roc = roc_auc_score(label, fisher_values) * 100
     return au_roc
 
 def getTNR(in_fisher_values, out_fisher_values):
@@ -389,7 +438,8 @@ if __name__ == "__main__":
     for trial in range(opt.trials):
         auroc_one_trial = []
         # tnr_one_trial = []
-        checkOOD()
+        if opt.check_ood:
+            checkOOD()
         for i in range(opt.n):
             print("Calculating fisher-values for n: ", i+1)
             in_fisher_values_per_win, out_fisher_values_per_win = eval_detection_fisher(i+1)
