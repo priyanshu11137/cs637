@@ -193,6 +193,7 @@ if __name__ == '__main__':
 
         ### loss funciton, optimizer and scheduler ###
         criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(params= net.parameters(), lr= args.lr, weight_decay=args.wgtDecay)
 
         prev_best_val_loss = float('inf')
         prev_best_model_path = os.path.join(log_dir, 'best_drift_model.pt')
