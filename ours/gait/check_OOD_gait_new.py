@@ -401,14 +401,22 @@ def eval_detection_fisher(eval_n):
     return in_fisher_per_win, out_fisher_per_win
 
 def getAUROC(in_fisher_values, out_fisher_values):
+    # Combine Fisher values
     fisher_values = np.concatenate((in_fisher_values, out_fisher_values))
 
+    # Combine labels
     indist_label = np.ones(len(in_fisher_values))
     ood_label = np.zeros(len(out_fisher_values))
     label = np.concatenate((indist_label, ood_label))
 
+    # Check for NaN values and remove them
+    valid_indices = ~np.isnan(fisher_values)
+    fisher_values = fisher_values[valid_indices]
+    label = label[valid_indices]
+
+    # Calculate AUROC
     from sklearn.metrics import roc_auc_score
-    au_roc = roc_auc_score(label, fisher_values)*100
+    au_roc = roc_auc_score(label, fisher_values) * 100
     return au_roc
 
 def getTNR(in_fisher_values, out_fisher_values):
