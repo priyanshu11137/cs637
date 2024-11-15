@@ -1,8 +1,10 @@
 # The following instructions for generating results  on GAIT dataset. This code has been run in kaggle notebook attached
 
-## Step 1: Download gait-in-neurodegenerative-disease-database-1.0.0 folder from [https://drive.google.com/drive/folders/1Z-3YnlhcCxI_KlFF6FF7tMp5MSEZURRH?usp=sharing](https://drive.google.com/file/d/1KRqNs4rQQpsl6s-TyrdeqaemarjBV7-J/view?usp=drive_link)
+## Step 1: Download gait-in-neurodegenerative-disease-database-1.0.0 folder from 
+[https://drive.google.com/drive/folders/1Z-3YnlhcCxI_KlFF6FF7tMp5MSEZURRH?usp=sharing](https://drive.google.com/file/d/1KRqNs4rQQpsl6s-TyrdeqaemarjBV7-J/view?usp=drive_link)
 
-## Step 2: Download the three trained models (gait_16.pt, gait_18.pt, gait_20.pt) from [https://drive.google.com/drive/folders/1p0F2D3oTUgB3QKq_0uLu1F9eKRzRibml?usp=sharing](https://drive.google.com/drive/folders/1fflUH_o-_6rNhmZKlt1CauhUJWGKs5p0?usp=drive_link)
+## Step 2: Download the three trained models (gait_16.pt, gait_18.pt, gait_20.pt) from 
+[https://drive.google.com/drive/folders/1p0F2D3oTUgB3QKq_0uLu1F9eKRzRibml?usp=sharing](https://drive.google.com/drive/folders/1fflUH_o-_6rNhmZKlt1CauhUJWGKs5p0?usp=drive_link)
 
 
 
